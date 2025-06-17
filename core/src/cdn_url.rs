@@ -54,7 +54,7 @@ impl From<CdnUrlError> for Error {
 #[derive(Debug, Clone)]
 pub struct CdnUrl {
     pub file_id: FileId,
-    urls: MaybeExpiringUrls,
+    pub urls: MaybeExpiringUrls,
 }
 
 impl CdnUrl {

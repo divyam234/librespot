@@ -24,7 +24,7 @@ pub trait Open {
 }
 
 pub trait Sink {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,_:Option<u32>) -> SinkResult<()> {
         Ok(())
     }
     fn stop(&mut self) -> SinkResult<()> {

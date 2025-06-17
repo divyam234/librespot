@@ -2,7 +2,7 @@ use super::{Open, Sink, SinkAsBytes, SinkError, SinkResult};
 use crate::config::AudioFormat;
 use crate::convert::Converter;
 use crate::decoder::AudioPacket;
-use crate::{NUM_CHANNELS, SAMPLE_RATE};
+use crate::{NUM_CHANNELS};
 use libpulse_binding::{self as pulse, error::PAErr, stream::Direction};
 use libpulse_simple_binding::Simple;
 use std::env;
@@ -77,7 +77,7 @@ impl Open for PulseAudioSink {
 }
 
 impl Sink for PulseAudioSink {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,rate:Option<u32>) -> SinkResult<()> {
         if self.sink.is_none() {
             // PulseAudio calls S24 and S24_3 different from the rest of the world
             let pulse_format = match self.format {
@@ -92,7 +92,7 @@ impl Sink for PulseAudioSink {
             let sample_spec = pulse::sample::Spec {
                 format: pulse_format,
                 channels: NUM_CHANNELS,
-                rate: SAMPLE_RATE,
+                rate:rate.unwrap(),
             };
 
             if !sample_spec.is_valid() {
@@ -100,7 +100,7 @@ impl Sink for PulseAudioSink {
                     pulse_format,
                     format: self.format,
                     channels: NUM_CHANNELS,
-                    rate: SAMPLE_RATE,
+                    rate: rate.unwrap(),
                 };
 
                 return Err(SinkError::from(pulse_error));

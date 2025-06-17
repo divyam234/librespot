@@ -2,7 +2,7 @@ use super::{Open, Sink, SinkError, SinkResult};
 use crate::config::AudioFormat;
 use crate::convert::Converter;
 use crate::decoder::AudioPacket;
-use crate::{NUM_CHANNELS, SAMPLE_RATE};
+use crate::{NUM_CHANNELS};
 use portaudio_rs::device::{get_default_output_index, DeviceIndex, DeviceInfo};
 use portaudio_rs::stream::*;
 use std::process::exit;
@@ -95,7 +95,7 @@ impl<'a> Open for PortAudioSink<'a> {
 }
 
 impl Sink for PortAudioSink<'_> {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,rate:Option<u32>) -> SinkResult<()> {
         macro_rules! start_sink {
             (ref mut $stream: ident, ref $parameters: ident) => {{
                 if $stream.is_none() {
@@ -103,7 +103,7 @@ impl Sink for PortAudioSink<'_> {
                         Stream::open(
                             None,
                             Some(*$parameters),
-                            SAMPLE_RATE as f64,
+                            rate.unwrap() as f64,
                             FRAMES_PER_BUFFER_UNSPECIFIED,
                             StreamFlags::DITHER_OFF, // no need to dither twice; use librespot dithering instead
                             None,

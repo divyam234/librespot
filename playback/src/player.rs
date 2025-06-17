@@ -19,6 +19,8 @@ use futures_util::{
     future, future::FusedFuture, stream::futures_unordered::FuturesUnordered, StreamExt,
     TryFutureExt,
 };
+use librespot_core::qobuz::{QobuzClient, QobuzPayload};
+use librespot_metadata::audio::UniqueFields;
 use parking_lot::Mutex;
 use symphonia::core::io::MediaSource;
 use tokio::sync::{mpsc, oneshot};
@@ -32,6 +34,7 @@ use crate::{
     decoder::{AudioDecoder, AudioPacket, AudioPacketPosition, SymphoniaDecoder},
     metadata::audio::{AudioFileFormat, AudioFiles, AudioItem},
     mixer::VolumeGetter,
+    SAMPLE_RATE,
 };
 
 #[cfg(feature = "passthrough-decoder")]
@@ -68,7 +71,7 @@ struct PlayerInternal {
     config: PlayerConfig,
     commands: mpsc::UnboundedReceiver<PlayerCommand>,
     load_handles: Arc<Mutex<HashMap<thread::ThreadId, thread::JoinHandle<()>>>>,
-
+    rate: u32,
     state: PlayerState,
     preload: PlayerPreload,
     sink: Box<dyn Sink>,
@@ -473,7 +476,7 @@ impl Player {
                 config,
                 commands: cmd_rx,
                 load_handles: Arc::new(Mutex::new(HashMap::new())),
-
+                rate: SAMPLE_RATE,
                 state: PlayerState::Stopped,
                 preload: PlayerPreload::None,
                 sink: sink_builder(),
@@ -651,6 +654,7 @@ struct PlayerLoadedTrackData {
     duration_ms: u32,
     stream_position_ms: u32,
     is_explicit: bool,
+    rate: u32,
 }
 
 enum PlayerPreload {
@@ -679,6 +683,7 @@ enum PlayerState {
         track_id: SpotifyId,
         play_request_id: u64,
         decoder: Decoder,
+        rate: u32,
         audio_item: AudioItem,
         normalisation_data: NormalisationData,
         normalisation_factor: f64,
@@ -693,6 +698,7 @@ enum PlayerState {
         track_id: SpotifyId,
         play_request_id: u64,
         decoder: Decoder,
+        rate: u32,
         normalisation_data: NormalisationData,
         audio_item: AudioItem,
         normalisation_factor: f64,
@@ -762,6 +768,7 @@ impl PlayerState {
                 track_id,
                 play_request_id,
                 decoder,
+                rate,
                 duration_ms,
                 bytes_per_second,
                 normalisation_data,
@@ -776,6 +783,7 @@ impl PlayerState {
                     play_request_id,
                     loaded_track: PlayerLoadedTrackData {
                         decoder,
+                        rate,
                         normalisation_data,
                         stream_loader_controller,
                         audio_item,
@@ -803,6 +811,7 @@ impl PlayerState {
             Paused {
                 track_id,
                 play_request_id,
+                rate,
                 decoder,
                 audio_item,
                 normalisation_data,
@@ -818,6 +827,7 @@ impl PlayerState {
                     track_id,
                     play_request_id,
                     decoder,
+                    rate,
                     audio_item,
                     normalisation_data,
                     normalisation_factor,
@@ -849,6 +859,7 @@ impl PlayerState {
                 track_id,
                 play_request_id,
                 decoder,
+                rate,
                 audio_item,
                 normalisation_data,
                 normalisation_factor,
@@ -864,6 +875,7 @@ impl PlayerState {
                     track_id,
                     play_request_id,
                     decoder,
+                    rate,
                     audio_item,
                     normalisation_data,
                     normalisation_factor,
@@ -968,6 +980,39 @@ impl PlayerTrackLoader {
             audio_item.name, audio_item.uri
         );
 
+        let qobuz_client = QobuzClient {};
+        let qobuz_result = qobuz_client
+            .get_track(
+                &self.session,
+                &QobuzPayload {
+                    title: audio_item.name.clone(),
+                    id: audio_item.track_id.to_string(),
+                    album: match audio_item.unique_fields.clone() {
+                        UniqueFields::Track { album, .. } => album,
+                        UniqueFields::Episode { .. } => String::new(),
+                    },
+                    artists: match audio_item.unique_fields {
+                        UniqueFields::Track {
+                            ref album_artists, ..
+                        } => album_artists.to_vec(),
+                        UniqueFields::Episode { .. } => Vec::new(),
+                    },
+                    duration: audio_item.duration_ms,
+                },
+            )
+            .await;
+        match qobuz_result {
+            Some(ref t) => {
+                info!("Found qobuz track with Id <{}>", t.id);
+            }
+            None => {
+                info!(
+                    "Qobuz track not found  with Spotify URI <{}>",
+                    audio_item.uri
+                );
+            }
+        }
+
         // (Most) podcasts seem to support only 96 kbps Ogg Vorbis, so fall back to it
         let formats = match self.config.bitrate {
             Bitrate::Bitrate96 => [
@@ -999,8 +1044,18 @@ impl PlayerTrackLoader {
             ],
         };
 
-        let (format, file_id) =
-            match formats
+        let (format, file_id) = match qobuz_result {
+            Some(ref t) => {
+                let format = if t.quality == 7 || t.quality == 27 {
+                    AudioFileFormat::FLAC_FLAC_24BIT
+                } else if t.quality == 6 {
+                    AudioFileFormat::FLAC_FLAC
+                } else {
+                    AudioFileFormat::MP3_320
+                };
+                (format, t.cdn_url.file_id)
+            }
+            None => match formats
                 .iter()
                 .find_map(|format| match audio_item.files.get(format) {
                     Some(&file_id) => Some((*format, file_id)),
@@ -1014,14 +1069,23 @@ impl PlayerTrackLoader {
                     );
                     return None;
                 }
-            };
+            },
+        };
 
         let bytes_per_second = self.stream_data_rate(format)?;
 
         // This is only a loop to be able to reload the file if an error occurred
         // while opening a cached file.
         loop {
-            let encrypted_file = AudioFile::open(&self.session, file_id, bytes_per_second);
+            let encrypted_file = AudioFile::open(
+                &self.session,
+                file_id,
+                match qobuz_result {
+                    Some(ref t) => Some(t.cdn_url.clone()),
+                    None => None,
+                },
+                bytes_per_second,
+            );
 
             let encrypted_file = match encrypted_file.await {
                 Ok(encrypted_file) => encrypted_file,
@@ -1038,12 +1102,15 @@ impl PlayerTrackLoader {
             // Not all audio files are encrypted. If we can't get a key, try loading the track
             // without decryption. If the file was encrypted after all, the decoder will fail
             // parsing and bail out, so we should be safe from outputting ear-piercing noise.
-            let key = match self.session.audio_key().request(spotify_id, file_id).await {
-                Ok(key) => Some(key),
-                Err(e) => {
-                    warn!("Unable to load key, continuing without decryption: {}", e);
-                    None
-                }
+            let key = match qobuz_result {
+                Some(_) => None,
+                None => match self.session.audio_key().request(spotify_id, file_id).await {
+                    Ok(key) => Some(key),
+                    Err(e) => {
+                        warn!("Unable to load key, continuing without decryption: {}", e);
+                        None
+                    }
+                },
             };
             let mut decrypted_file = AudioDecrypt::new(key, encrypted_file);
 
@@ -1068,6 +1135,7 @@ impl PlayerTrackLoader {
                     return None;
                 }
             };
+            let mut rate = SAMPLE_RATE;
 
             let mut symphonia_decoder = |audio_file, format| {
                 SymphoniaDecoder::new(audio_file, format).map(|mut decoder| {
@@ -1076,6 +1144,7 @@ impl PlayerTrackLoader {
                     if normalisation_data.is_none() {
                         normalisation_data = decoder.normalisation_data();
                     }
+                    rate = decoder.rate;
                     Box::new(decoder) as Decoder
                 })
             };
@@ -1090,10 +1159,8 @@ impl PlayerTrackLoader {
             #[cfg(not(feature = "passthrough-decoder"))]
             let decoder_type = symphonia_decoder(audio_file, format);
 
-            let normalisation_data = normalisation_data.unwrap_or_else(|| {
-                warn!("Unable to get normalisation data, continuing with defaults.");
-                NormalisationData::default()
-            });
+            let normalisation_data =
+                normalisation_data.unwrap_or_else(|| NormalisationData::default());
 
             let mut decoder = match decoder_type {
                 Ok(decoder) => decoder,
@@ -1157,9 +1224,9 @@ impl PlayerTrackLoader {
             let is_explicit = audio_item.is_explicit;
 
             info!("<{}> ({} ms) loaded", audio_item.name, duration_ms);
-
             return Some(PlayerLoadedTrackData {
                 decoder,
+                rate,
                 normalisation_data,
                 stream_loader_controller,
                 audio_item,
@@ -1274,7 +1341,9 @@ impl Future for PlayerInternal {
             }
 
             if self.state.is_playing() {
-                self.ensure_sink_running();
+                if let PlayerState::Playing { rate, .. } = self.state {
+                    self.ensure_sink_running(rate)
+                }
 
                 if let PlayerState::Playing {
                     track_id,
@@ -1434,13 +1503,17 @@ impl Future for PlayerInternal {
 }
 
 impl PlayerInternal {
-    fn ensure_sink_running(&mut self) {
+    fn ensure_sink_running(&mut self, rate: u32) {
+        if self.rate != rate {
+            self.ensure_sink_stopped(false);
+            self.rate = rate
+        }
         if self.sink_status != SinkStatus::Running {
             trace!("== Starting sink ==");
             if let Some(callback) = &mut self.sink_event_callback {
                 callback(SinkStatus::Running);
             }
-            match self.sink.start() {
+            match self.sink.start(Some(rate)) {
                 Ok(()) => self.sink_status = SinkStatus::Running,
                 Err(e) => {
                     error!("{}", e);
@@ -1525,6 +1598,7 @@ impl PlayerInternal {
             PlayerState::Paused {
                 track_id,
                 play_request_id,
+                rate,
                 stream_position_ms,
                 ..
             } => {
@@ -1534,7 +1608,7 @@ impl PlayerInternal {
                     play_request_id,
                     position_ms: stream_position_ms,
                 });
-                self.ensure_sink_running();
+                self.ensure_sink_running(rate);
             }
             PlayerState::Loading {
                 ref mut start_playback,
@@ -1745,7 +1819,7 @@ impl PlayerInternal {
             NormalisationData::get_factor(&config, loaded_track.normalisation_data);
 
         if start_playback {
-            self.ensure_sink_running();
+            self.ensure_sink_running(loaded_track.rate);
             self.send_event(PlayerEvent::Playing {
                 track_id,
                 play_request_id,
@@ -1756,6 +1830,7 @@ impl PlayerInternal {
                 track_id,
                 play_request_id,
                 decoder: loaded_track.decoder,
+                rate: loaded_track.rate,
                 audio_item: loaded_track.audio_item,
                 normalisation_data: loaded_track.normalisation_data,
                 normalisation_factor,
@@ -1775,6 +1850,7 @@ impl PlayerInternal {
                 track_id,
                 play_request_id,
                 decoder: loaded_track.decoder,
+                rate: loaded_track.rate,
                 audio_item: loaded_track.audio_item,
                 normalisation_data: loaded_track.normalisation_data,
                 normalisation_factor,
@@ -1876,6 +1952,7 @@ impl PlayerInternal {
                 if let PlayerState::Playing {
                     stream_position_ms,
                     decoder,
+                    rate,
                     audio_item,
                     stream_loader_controller,
                     bytes_per_second,
@@ -1887,6 +1964,7 @@ impl PlayerInternal {
                 | PlayerState::Paused {
                     stream_position_ms,
                     decoder,
+                    rate,
                     audio_item,
                     stream_loader_controller,
                     bytes_per_second,
@@ -1898,6 +1976,7 @@ impl PlayerInternal {
                 {
                     let loaded_track = PlayerLoadedTrackData {
                         decoder,
+                        rate,
                         normalisation_data,
                         stream_loader_controller,
                         audio_item,

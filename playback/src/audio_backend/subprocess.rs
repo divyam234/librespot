@@ -83,7 +83,7 @@ impl Open for SubprocessSink {
 }
 
 impl Sink for SubprocessSink {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,_:Option<u32>) -> SinkResult<()> {
         self.child.get_or_insert({
             match self.shell_command.as_deref() {
                 Some(command) => {
@@ -193,7 +193,7 @@ impl SubprocessSink {
 
     fn try_restart(&mut self, e: SubprocessError, restarted: &mut bool) -> SinkResult<()> {
         // If the restart fails throw the original error back.
-        if !*restarted && self.stop().is_ok() && self.start().is_ok() {
+        if !*restarted && self.stop().is_ok() && self.start(None).is_ok() {
             *restarted = true;
 
             Ok(())

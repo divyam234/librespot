@@ -422,7 +422,7 @@ impl Open for AlsaSink {
 }
 
 impl Sink for AlsaSink {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,_:Option<u32>) -> SinkResult<()> {
         if self.pcm.is_none() {
             let (pcm, bytes_per_period) = open_device(&self.device, self.format)?;
             self.pcm = Some(pcm);

@@ -28,6 +28,7 @@ pub mod mercury;
 pub mod packet;
 mod proxytunnel;
 pub mod session;
+pub mod qobuz;
 mod socket;
 #[allow(dead_code)]
 pub mod spclient;

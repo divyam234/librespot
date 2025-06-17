@@ -10,8 +10,8 @@ use symphonia::{
         meta::{StandardTagKey, Value},
     },
     default::{
-        codecs::{MpaDecoder, VorbisDecoder},
-        formats::{MpaReader, OggReader},
+        codecs::{MpaDecoder, VorbisDecoder, FlacDecoder},
+        formats::{MpaReader, OggReader, FlacReader},
     },
 };
 
@@ -20,13 +20,14 @@ use super::{AudioDecoder, AudioPacket, AudioPacketPosition, DecoderError, Decode
 use crate::{
     metadata::audio::{AudioFileFormat, AudioFiles},
     player::NormalisationData,
-    NUM_CHANNELS, PAGES_PER_MS, SAMPLE_RATE,
+    NUM_CHANNELS,
 };
 
 pub struct SymphoniaDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     sample_buffer: Option<SampleBuffer<f64>>,
+    pub rate: u32
 }
 
 impl SymphoniaDecoder {
@@ -48,7 +49,9 @@ impl SymphoniaDecoder {
             Box::new(OggReader::try_new(mss, &format_opts)?)
         } else if AudioFiles::is_mp3(file_format) {
             Box::new(MpaReader::try_new(mss, &format_opts)?)
-        } else {
+        } else if AudioFiles::is_flac(file_format) {
+            Box::new(FlacReader::try_new(mss, &format_opts)?)
+        }else {
             return Err(DecoderError::SymphoniaDecoder(format!(
                 "Unsupported format: {file_format:?}"
             )));
@@ -63,6 +66,8 @@ impl SymphoniaDecoder {
             Box::new(VorbisDecoder::try_new(&track.codec_params, &decoder_opts)?)
         } else if AudioFiles::is_mp3(file_format) {
             Box::new(MpaDecoder::try_new(&track.codec_params, &decoder_opts)?)
+        }else if AudioFiles::is_flac(file_format) {
+            Box::new(FlacDecoder::try_new(&track.codec_params, &decoder_opts)?)
         } else {
             return Err(DecoderError::SymphoniaDecoder(format!(
                 "Unsupported decoder: {file_format:?}"
@@ -72,12 +77,7 @@ impl SymphoniaDecoder {
         let rate = decoder.codec_params().sample_rate.ok_or_else(|| {
             DecoderError::SymphoniaDecoder("Could not retrieve sample rate".into())
         })?;
-        if rate != SAMPLE_RATE {
-            return Err(DecoderError::SymphoniaDecoder(format!(
-                "Unsupported sample rate: {rate}"
-            )));
-        }
-
+        
         let channels = decoder.codec_params().channels.ok_or_else(|| {
             DecoderError::SymphoniaDecoder("Could not retrieve channel configuration".into())
         })?;
@@ -90,6 +90,7 @@ impl SymphoniaDecoder {
         Ok(Self {
             format,
             decoder,
+            rate,
 
             // We set the sample buffer when decoding the first full packet,
             // whose duration is also the ideal sample buffer size.
@@ -138,7 +139,7 @@ impl SymphoniaDecoder {
                 time.as_millis() as u32
             }
             // Fallback in the unexpected case that the format has no base time set.
-            None => (ts as f64 * PAGES_PER_MS) as u32,
+            None => (ts as f64 * (self.rate as f64 / 1000.0)) as u32,
         }
     }
 }

@@ -59,7 +59,7 @@ impl Open for StdoutSink {
 }
 
 impl Sink for StdoutSink {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,_:Option<u32>) -> SinkResult<()> {
         self.output.get_or_insert({
             match self.file.as_deref() {
                 Some(file) => Box::new(

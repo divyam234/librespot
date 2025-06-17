@@ -47,7 +47,7 @@ rodio           = { version = "0.20.1", optional = true, default-features = fals
 cpal            = { version = "0.15.1", optional = true }
 
 # Container and audio decoder
-symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis","flac"] }
 
 # Legacy Ogg container decoder for the passthrough decoder
 ogg = { version = "0.9", optional = true }

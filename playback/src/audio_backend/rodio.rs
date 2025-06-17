@@ -185,7 +185,7 @@ pub fn open(host: cpal::Host, device: Option<String>, format: AudioFormat) -> Ro
 }
 
 impl Sink for RodioSink {
-    fn start(&mut self) -> SinkResult<()> {
+    fn start(&mut self,_:Option<u32>) -> SinkResult<()> {
         self.rodio_sink.play();
         Ok(())
     }

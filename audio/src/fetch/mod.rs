@@ -363,6 +363,7 @@ impl AudioFile {
     pub async fn open(
         session: &Session,
         file_id: FileId,
+        cdn_url: Option<CdnUrl>,
         bytes_per_second: usize,
     ) -> Result<AudioFile, Error> {
         if let Some(file) = session.cache().and_then(|cache| cache.file(file_id)) {
@@ -375,7 +376,7 @@ impl AudioFile {
         let (complete_tx, complete_rx) = oneshot::channel();
 
         let streaming =
-            AudioFileStreaming::open(session.clone(), file_id, complete_tx, bytes_per_second);
+            AudioFileStreaming::open(session.clone(), file_id, cdn_url,complete_tx, bytes_per_second);
 
         let session_ = session.clone();
         session.spawn(complete_rx.map_ok(move |mut file| {
@@ -421,10 +422,15 @@ impl AudioFileStreaming {
     pub async fn open(
         session: Session,
         file_id: FileId,
+        cdn_url: Option<CdnUrl>,
         complete_tx: oneshot::Sender<NamedTempFile>,
         bytes_per_second: usize,
     ) -> Result<AudioFileStreaming, Error> {
-        let cdn_url = CdnUrl::new(file_id).resolve_audio(&session).await?;
+        
+         let cdn_url=match cdn_url {
+            Some(cdn_url)=>cdn_url,
+            None => CdnUrl::new(file_id).resolve_audio(&session).await?
+        };
 
         if let Ok(url) = cdn_url.try_get_url() {
             trace!("Streaming from {}", url);
